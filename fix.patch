@@ -1,0 +1,766 @@
+diff -urN /home/alex/construct_tx/test/node_modules/bsv/lib/transaction/transaction.js /home/alex/contracrfilescrypt/test/node_modules/bsv/lib/transaction/transaction.js
+--- /home/alex/construct_tx/test/node_modules/bsv/lib/transaction/transaction.js	2024-08-15 11:05:52.858532580 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/bsv/lib/transaction/transaction.js	2024-08-14 16:44:23.180400959 +0800
+@@ -60,11 +60,11 @@
+   }
+ }
+ 
+-var CURRENT_VERSION = 1
++var CURRENT_VERSION = 10
+ var DEFAULT_NLOCKTIME = 0
+ 
+ // Minimum amount for an output for it not to be considered a dust output
+-Transaction.DUST_AMOUNT = 1
++Transaction.DUST_AMOUNT = 80 
+ 
+ // Margin of error to allow fees in the vecinity of the expected value but doesn't allow a big difference
+ Transaction.FEE_SECURITY_MARGIN = 150
+@@ -79,7 +79,7 @@
+ Transaction.NLOCKTIME_MAX_VALUE = 4294967295
+ 
+ // Value used for fee estimation (satoshis per kilobyte)
+-Transaction.FEE_PER_KB = 50
++Transaction.FEE_PER_KB = 80 
+ 
+ // Safe upper bound for change address script size in bytes
+ Transaction.CHANGE_OUTPUT_MAX_SIZE = 20 + 4 + 34 + 4
+@@ -132,6 +132,9 @@
+  * @return {Buffer}
+  */
+ Transaction.prototype._getHash = function () {
++  if (this.version >= 10) {
++    return Hash.sha256sha256(this.MetaTxHeader().toBuffer())
++}
+   return Hash.sha256sha256(this.toBuffer())
+ }
+ 
+@@ -287,6 +290,39 @@
+   return writer
+ }
+ 
++Transaction.prototype.MetaTxHeader = function () {
++  var writer = new BufferWriter()
++  writer.writeUInt32LE(this.version)
++  writer.writeUInt32LE(this.nLockTime)
++  writer.writeInt32LE(this.inputs.length)
++  writer.writeInt32LE(this.outputs.length)
++
++  const inputWriter = new BufferWriter()
++  const inputWriter2 = new BufferWriter()
++  for (const input of this.inputs) {
++    inputWriter.writeReverse(input.prevTxId)
++    inputWriter.writeUInt32LE(input.outputIndex)
++    inputWriter.writeUInt32LE(input.sequenceNumber)
++
++    inputWriter2.write(Hash.sha256(input.script.toBuffer()))
++  }
++  writer.write(Hash.sha256(inputWriter.toBuffer()))
++  writer.write(Hash.sha256(inputWriter2.toBuffer()))
++
++  const outputWriter = new BufferWriter()
++  for (const output of this.outputs) {
++    outputWriter.writeUInt64LEBN(output.satoshisBN)
++    outputWriter.write(Hash.sha256(output.script.toBuffer()))
++  }
++  writer.write(Hash.sha256(outputWriter.toBuffer()))
++  return writer
++}
++
++Transaction.prototype.fromBuffer = function (buffer) {
++  var reader = new BufferReader(buffer)
++  return this.fromBufferReader(reader)
++}
++
+ Transaction.prototype.fromBuffer = function (buffer) {
+   var reader = new BufferReader(buffer)
+   return this.fromBufferReader(reader)
+@@ -926,7 +962,7 @@
+  */
+ Transaction.prototype._estimateFee = function () {
+   var estimatedSize = this._estimateSize()
+-  return Math.ceil(estimatedSize / 1000 * (this._feePerKb || Transaction.FEE_PER_KB))
++  return Math.max(80,Math.ceil(estimatedSize / 1000 * (this._feePerKb || Transaction.FEE_PER_KB)));
+ }
+ 
+ Transaction.prototype.getUnspentValue = function () {
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/bsv/abstract-provider.js /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/bsv/abstract-provider.js
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/bsv/abstract-provider.js	2024-08-15 11:05:52.502522820 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/bsv/abstract-provider.js	2024-08-14 16:49:34.436923549 +0800
+@@ -71,7 +71,7 @@
+             // TODO: fix tx.serialize issue 
+             const hex = tx.serialize({ disableIsFullySigned: true });
+             const feePerKb = yield this.getFeePerKb();
+-            const estimateFee = Math.ceil(hex.length / 2 / 1000 * feePerKb);
++            const estimateFee = Math.max(80,Math.ceil(hex.length / 2 / 1000 * feePerKb));
+             // clear cache
+             tx['_inputAmount'] = undefined;
+             if (tx.getUnspentValue() < estimateFee) {
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/bsv/wallets/wallet.d.ts /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/bsv/wallets/wallet.d.ts
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/bsv/wallets/wallet.d.ts	1970-01-01 08:00:00.000000000 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/bsv/wallets/wallet.d.ts	2024-08-14 16:23:53.287717942 +0800
+@@ -0,0 +1,40 @@
++import { Signer, SignatureRequest, SignatureResponse, SignTransactionOptions } from "../abstract-signer";
++import { Provider, TransactionResponse, UtxoQueryOptions } from "../abstract-provider";
++import { AddressOption, Network, UTXO } from "../types";
++import { bsv } from "scryptlib/dist";
++/**
++ * An implemention of a simple wallet which should just be used in dev/test environments.
++ * It can hold multiple private keys and have a feature of cachable in-memory utxo management.
++ *
++ * Reminder: DO NOT USE IT IN PRODUCTION ENV.
++ */
++export declare class Wallet extends Signer {
++    private readonly _privateKeys;
++    private _utxoManagers;
++    private splitFeeTx;
++    constructor(privateKey: bsv.PrivateKey | bsv.PrivateKey[], provider: Provider);
++    enableSplitFeeTx(on: boolean): void;
++    isAuthenticated(): Promise<boolean>;
++    requestAuth(): Promise<{
++        isAuthenticated: boolean;
++        error: string;
++    }>;
++    get network(): Network;
++    get addresses(): string[];
++    addPrivateKey(privateKey: bsv.PrivateKey | bsv.PrivateKey[]): this;
++    checkPrivateKeys(): bsv.Networks.Network;
++    setProvider(provider: Provider): void;
++    getDefaultAddress(): Promise<bsv.Address>;
++    getDefaultPubKey(): Promise<bsv.PublicKey>;
++    getPubKey(address: AddressOption): Promise<bsv.PublicKey>;
++    getNetwork(): Promise<bsv.Networks.Network>;
++    signTransaction(tx: bsv.Transaction, options?: SignTransactionOptions): Promise<bsv.Transaction>;
++    signMessage(message: string, address?: AddressOption): Promise<string>;
++    getSignatures(rawTxHex: string, sigRequests: SignatureRequest[]): Promise<SignatureResponse[]>;
++    listUnspent(address: AddressOption, options?: UtxoQueryOptions): Promise<UTXO[]>;
++    private _getAddressesIn;
++    private _checkAddressOption;
++    private get _defaultPrivateKey();
++    private _getPrivateKeys;
++    signAndsendTransaction(tx: bsv.Transaction, options?: SignTransactionOptions): Promise<TransactionResponse>;
++}
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/bsv/wallets/wallet.js /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/bsv/wallets/wallet.js
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/bsv/wallets/wallet.js	1970-01-01 08:00:00.000000000 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/bsv/wallets/wallet.js	2024-08-14 17:19:24.912797192 +0800
+@@ -0,0 +1,322 @@
++"use strict";
++var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
++    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
++    return new (P || (P = Promise))(function (resolve, reject) {
++        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
++        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
++        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
++        step((generator = generator.apply(thisArg, _arguments || [])).next());
++    });
++};
++Object.defineProperty(exports, "__esModule", { value: true });
++exports.Wallet = void 0;
++const abstract_signer_1 = require("../abstract-signer");
++const dist_1 = require("scryptlib/dist");
++const utils_1 = require("../utils");
++const DEFAULT_SIGHASH_TYPE = dist_1.bsv.crypto.Signature.ALL;
++
++class Wallet extends abstract_signer_1.Signer {
++    constructor(privateKey, provider) {
++        super(provider);
++        this.splitFeeTx = true;
++        if (privateKey instanceof Array) {
++            this._privateKeys = privateKey;
++        }
++        else {
++            this._privateKeys = [privateKey];
++        }
++        this.checkPrivateKeys();
++        this._utxoManagers = new Map();
++    }
++
++    enableSplitFeeTx(on) {
++        this.splitFeeTx = on;
++    }
++
++    isAuthenticated() {
++        return __awaiter(this, void 0, void 0, function* () {
++            return Promise.resolve(true);
++        });
++    }
++
++    requestAuth() {
++        return __awaiter(this, void 0, void 0, function* () {
++            return Promise.resolve({ isAuthenticated: true, error: '' });
++        });
++    }
++
++    get network() {
++        return this.provider.getNetwork();
++    }
++
++    get addresses() {
++        return this._privateKeys.map(p => p.toAddress(this.network).toString());
++    }
++
++    addPrivateKey(privateKey) {
++        const keys = privateKey instanceof Array ? privateKey : [privateKey];
++        this._privateKeys.push(...keys);
++        this.checkPrivateKeys();
++        return this;
++    }
++
++    checkPrivateKeys() {
++        const networks = this._privateKeys.map(key => key.toAddress().network);
++        if (!networks.every(n => n.name === networks[0].name)) {
++            throw new Error(`All private keys should be ${networks[0].name} private key`);
++        }
++        return networks[0];
++    }
++
++    setProvider(provider) {
++        throw new Error("cannot alter provider");
++    }
++
++    getDefaultAddress() {
++        return Promise.resolve(this._defaultPrivateKey.toAddress());
++    }
++
++    getDefaultPubKey() {
++        return Promise.resolve(this._defaultPrivateKey.toPublicKey());
++    }
++
++    getPubKey(address) {
++        return Promise.resolve(this._getPrivateKeys(address)[0].toPublicKey());
++    }
++
++    getNetwork() {
++        return Promise.resolve(this._defaultPrivateKey.toAddress().network);
++    }
++
++    signTransaction(tx, options) {
++        return __awaiter(this, void 0, void 0, function* () {
++            const addresses = options === null || options === void 0 ? void 0 : options.address;
++            this._checkAddressOption(addresses);
++            return Promise.resolve(tx.sign(this._getPrivateKeys(addresses)));
++        });
++    }
++
++    signMessage(message, address) {
++        throw new Error("Method #signMessage not implemented.");
++    }
++
++    getSignatures(rawTxHex, sigRequests) {
++        this._checkAddressOption(this._getAddressesIn(sigRequests));
++        const tx = new dist_1.bsv.Transaction(rawTxHex);
++        const sigResponses = sigRequests.flatMap(sigReq => {
++            const script = sigReq.scriptHex ? new dist_1.bsv.Script(sigReq.scriptHex) : dist_1.bsv.Script.buildPublicKeyHashOut((0, utils_1.parseAddresses)(sigReq.address, this.network)[0]);
++            tx.inputs[sigReq.inputIndex].output = new dist_1.bsv.Transaction.Output({
++                script: script,
++                satoshis: sigReq.satoshis
++            });
++            const privkeys = this._getPrivateKeys(sigReq.address);
++            return privkeys.map(privKey => {
++                const subScript = sigReq.csIdx !== undefined ? script.subScript(sigReq.csIdx) : script;
++                const sig = (0, dist_1.signTx)(tx, privKey, subScript, sigReq.satoshis, sigReq.inputIndex, sigReq.sigHashType);
++                return {
++                    sig: sig,
++                    publicKey: privKey.publicKey.toString(),
++                    inputIndex: sigReq.inputIndex,
++                    sigHashType: sigReq.sigHashType || DEFAULT_SIGHASH_TYPE,
++                    csIdx: sigReq.csIdx,
++                };
++            });
++        });
++        return Promise.resolve(sigResponses);
++    }
++    
++    listUnspent(address, options) {
++        return __awaiter(this, void 0, void 0, function* () {
++            if (this.splitFeeTx) {
++                let utxoManager = this._utxoManagers.get(address.toString());
++                if (!utxoManager) {
++                    utxoManager = new CacheableUtxoManager(address, this);
++                    this._utxoManagers.set(address.toString(), utxoManager);
++                    yield utxoManager.init();
++                }
++                if (options) {
++                    const unspentValue = options.unspentValue;
++                    const estimateSize = options.estimateSize;
++                    const feePerKb = options.feePerKb;
++                    let providerAmount = Math.max(80, Math.ceil((estimateSize / 1000 * feePerKb) - unspentValue)); 
++                    providerAmount += Math.ceil(((options.additional || 0) + 180) / 1000 * feePerKb);
++                    return utxoManager.fetchUtxos(providerAmount);
++                } else {
++                    return utxoManager.fetchUtxos(0);
++                }
++            } else {
++                return this.provider.listUnspent(address, options);
++            }
++        });
++    }
++    
++    _getAddressesIn(sigRequests) {
++        return (sigRequests || []).flatMap((req) => {
++            return req.address instanceof Array ? req.address : [req.address];
++        });
++    }
++    
++    _checkAddressOption(address) {
++        if (!address) return;
++        if (address instanceof Array) {
++            address.forEach(address => this._checkAddressOption(address));
++        } else {
++            if (!this.addresses.includes(address.toString())) {
++                throw new Error(`the address ${address.toString()} does not belong to this Wallet`);
++            }
++        }
++    }
++    
++    get _defaultPrivateKey() {
++        return this._privateKeys[0];
++    }
++    
++    _getPrivateKeys(address) {
++        if (!address) return [this._defaultPrivateKey];
++        this._checkAddressOption(address);
++        let addresses = [];
++        if (address instanceof Array) {
++            address.forEach(addr => addresses.push(addr.toString()));
++        } else {
++            addresses.push(address.toString());
++        }
++        return this._privateKeys.filter(priv => addresses.includes(priv.toAddress(this.network).toString()));
++    }
++    
++    signAndsendTransaction(tx, options) {
++        const _super = Object.create(null, {
++            signAndsendTransaction: { get: () => super.signAndsendTransaction }
++        });
++        return __awaiter(this, void 0, void 0, function* () {
++            const signedTx = yield _super.signAndsendTransaction.call(this, tx, options);
++            const address = yield this.getDefaultAddress();
++            let utxoManager = this._utxoManagers.get(address.toString());
++            if (utxoManager) {
++                utxoManager.collectUtxoFromTx(tx);
++            }
++            return signedTx;
++        });
++    }
++}
++exports.Wallet = Wallet;
++
++var InitState;
++(function (InitState) {
++    InitState[InitState["UNINITIALIZED"] = 0] = "UNINITIALIZED";
++    InitState[InitState["INITIALIZING"] = 1] = "INITIALIZING";
++    InitState[InitState["INITIALIZED"] = 2] = "INITIALIZED";
++})(InitState || (InitState = {}));
++;
++
++class CacheableUtxoManager {
++    constructor(address, signer) {
++        this.availableUtxos = [];
++        this.initStates = InitState.UNINITIALIZED;
++        this.initUtxoCnt = 0;
++        this.feePerkb = 80;
++        this.address = address;
++        this.signer = signer;
++    }
++
++    init() {
++        return __awaiter(this, void 0, void 0, function* () {
++            if (this.initStates === InitState.INITIALIZED) {
++                return this;
++            }
++            if (this.initStates === InitState.UNINITIALIZED) {
++                this.initStates = InitState.INITIALIZING;
++                this.availableUtxos = yield this.signer.connectedProvider.listUnspent(this.address);
++                this.feePerkb = yield this.signer.connectedProvider.getFeePerKb();
++                this.initStates = InitState.INITIALIZED;
++                this.initUtxoCnt = this.availableUtxos.length;
++                console.log(`current balance of address ${this.address} is ${this.availableUtxos.reduce((r, utxo) => r + utxo.satoshis, 0)} satoshis`);
++            }
++            while (this.initStates === InitState.INITIALIZING) {
++                yield sleep(1);
++            }
++            return this;
++        });
++    }
++
++    fetchUtxos(targetSatoshis) {
++        return __awaiter(this, void 0, void 0, function* () {
++            if (this.initStates === InitState.INITIALIZED
++                && this.initUtxoCnt > 0
++                && this.availableUtxos.length === 0) {
++                const timeoutSec = 30;
++                for (let i = 0; i < timeoutSec; i++) {
++                    yield sleep(1);
++                    if (this.availableUtxos.length > 0) {
++                        break;
++                    }
++                }
++            }
++            if (targetSatoshis <= 0) {
++                return this.availableUtxos.splice(0);
++            }
++            const sortedUtxos = this.availableUtxos.sort((a, b) => a.satoshis - b.satoshis);
++            if (targetSatoshis > sortedUtxos.reduce((r, utxo) => r + utxo.satoshis, 0)) {
++                throw new Error('no sufficient utxos to pay the fee of ' + targetSatoshis);
++            }
++            let idx = 0;
++            let accAmt = 0;
++            const dustLimit = 80;
++            let expectedAmt = 0;
++            for (let i = 0; i < sortedUtxos.length; i++) {
++                accAmt += sortedUtxos[i].satoshis;
++                const estimateFee = Math.max(80, Math.ceil((180 * (i + 1) + (10 + 34) * 2) * this.feePerkb / 1000));
++                expectedAmt = targetSatoshis + estimateFee + dustLimit;
++                if (accAmt >= expectedAmt) {
++                    idx = i;
++                    break;
++                }
++            }
++            const usedUtxos = sortedUtxos.slice(0, idx + 1);
++            this.availableUtxos = sortedUtxos.slice(idx + 1);
++            if (accAmt >= expectedAmt) {
++                const splitTx = new dist_1.bsv.Transaction().from(usedUtxos)
++                    .addOutput(new dist_1.bsv.Transaction.Output({
++                        script: dist_1.bsv.Script.buildPublicKeyHashOut(this.address),
++                        satoshis: targetSatoshis
++                    }))
++                    .feePerKb(this.feePerkb)
++                    .change(this.address);
++                yield this.signer.signAndsendTransaction(splitTx);
++                const index = this.availableUtxos.findIndex(utxo => utxo.satoshis === targetSatoshis);
++                return this.availableUtxos.splice(index, 1);
++            } else {
++                return usedUtxos;
++            }
++        });
++    }
++    
++    collectUtxoFromTx(tx) {
++        const txId = tx.id;
++        tx.outputs.forEach((output, index) => {
++            this.collectUtxoFrom(output, txId, index);
++        });
++    }
++
++    collectUtxoFrom(output, txId, outputIndex) {
++        if (output.script.toHex() === this.utxoScriptHex) {
++            this.availableUtxos.push({
++                txId,
++                outputIndex,
++                satoshis: output.satoshis,
++                script: output.script.toHex()
++            });
++        }
++    }
++
++    get utxoScriptHex() {
++        return dist_1.bsv.Script.buildPublicKeyHashOut(this.address).toHex();
++    }
++}
++
++const sleep = (seconds) => __awaiter(void 0, void 0, void 0, function* () {
++    return new Promise((resolve) => {
++        setTimeout(() => {
++            resolve({});
++        }, seconds * 1000);
++    });
++});
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/index.d.ts /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/index.d.ts
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/index.d.ts	2024-08-15 11:05:52.698528194 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/index.d.ts	2024-08-14 16:25:02.605983089 +0800
+@@ -18,5 +18,6 @@
+ export { Provider, TransactionResponse, TxHash, ProviderEvent, UtxoQueryOptions } from './bsv/abstract-provider';
+ export * from './bsv/abstract-signer';
+ export { TestWallet } from './bsv/wallets/test-wallet';
++export { Wallet } from './bsv/wallets/wallet';
+ export * from './bsv/signers';
+ export * from './client';
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/index.js /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/index.js
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/index.js	2024-08-15 11:30:50.681268260 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/index.js	2024-08-15 11:30:23.187965592 +0800
+@@ -14,7 +14,7 @@
+     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
+ };
+ Object.defineProperty(exports, "__esModule", { value: true });
+-exports.TestWallet = exports.Provider = exports.replayToLatest = exports.bsv = exports.FunctionCall = exports.buildOpreturnScript = exports.buildPublicKeyHashScript = exports.toHex = exports.SmartContractLib = exports.SmartContract = exports.method = exports.prop = exports.P2PK = exports.P2PKH = void 0;
++exports.Wallet =exports.TestWallet = exports.Provider = exports.replayToLatest = exports.bsv = exports.FunctionCall = exports.buildOpreturnScript = exports.buildPublicKeyHashScript = exports.toHex = exports.SmartContractLib = exports.SmartContract = exports.method = exports.prop = exports.P2PK = exports.P2PKH = void 0;
+ const decorators_1 = require("./smart-contract/decorators");
+ Object.defineProperty(exports, "prop", { enumerable: true, get: function () { return decorators_1.prop; } });
+ Object.defineProperty(exports, "method", { enumerable: true, get: function () { return decorators_1.method; } });
+@@ -50,6 +50,8 @@
+ __exportStar(require("./bsv/abstract-signer"), exports);
+ var test_wallet_1 = require("./bsv/wallets/test-wallet");
+ Object.defineProperty(exports, "TestWallet", { enumerable: true, get: function () { return test_wallet_1.TestWallet; } });
++var wallet_1 = require("./bsv/wallets/wallet");
++Object.defineProperty(exports, "Wallet", { enumerable: true, get: function () { return wallet_1.Wallet; } });
+ __exportStar(require("./bsv/signers"), exports);
+ __exportStar(require("./client"), exports);
+ //# sourceMappingURL=index.js.map
+\ 文件尾没有换行符
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/providers/index.d.ts /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/providers/index.d.ts
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/providers/index.d.ts	2024-08-15 11:05:52.698528194 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/providers/index.d.ts	2024-08-14 16:15:11.002557144 +0800
+@@ -5,3 +5,4 @@
+ export { DefaultProvider, DefaultProviderOption } from './default-provider';
+ export { DummyProvider } from './dummy-provider';
+ export { ScryptProvider } from './scrypt-provider';
++export { TbcProvider } from './tbcpy-provider';
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/providers/index.js /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/providers/index.js
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/providers/index.js	2024-08-15 11:05:52.662527207 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/providers/index.js	2024-08-14 16:15:03.166297818 +0800
+@@ -1,6 +1,8 @@
+ "use strict";
+ Object.defineProperty(exports, "__esModule", { value: true });
+-exports.ScryptProvider = exports.DummyProvider = exports.DefaultProvider = exports.TaalProvider = exports.GorillapoolProvider = exports.SensibleProvider = exports.WhatsonchainProvider = void 0;
++exports.TbcProvider =exports.ScryptProvider = exports.DummyProvider = exports.DefaultProvider = exports.TaalProvider = exports.GorillapoolProvider = exports.SensibleProvider = exports.WhatsonchainProvider = void 0;
++var tbc_provider_1 = require("./tbcpy-provider");
++Object.defineProperty(exports, "TbcProvider", { enumerable: true, get: function () { return tbc_provider_1.TbcProvider; } });
+ var whatsonchain_provider_1 = require("./whatsonchain-provider");
+ Object.defineProperty(exports, "WhatsonchainProvider", { enumerable: true, get: function () { return whatsonchain_provider_1.WhatsonchainProvider; } });
+ var sensible_provider_1 = require("./sensible-provider");
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/providers/tbcpy-provider.d.ts /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/providers/tbcpy-provider.d.ts
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/providers/tbcpy-provider.d.ts	1970-01-01 08:00:00.000000000 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/providers/tbcpy-provider.d.ts	2024-08-14 16:14:50.197868488 +0800
+@@ -0,0 +1,23 @@
++import { Networks } from "bsv";
++import { bsv } from "scryptlib";
++import { Provider, TransactionResponse, TxHash, UtxoQueryOptions } from "scrypt-ts/dist/bsv/abstract-provider";
++import { AddressOption, UTXO } from "scrypt-ts/dist/bsv/types";
++
++export declare class TbcProvider extends Provider {
++    private _network;
++    private _isConnected;
++    constructor(network: bsv.Networks.Network);
++    get apiPrefix(): string;
++    isConnected(): boolean;
++    connect(): Promise<this>;
++    updateNetwork(network: Networks.Network): void;
++    getNetwork(): Networks.Network;
++    sendRawTransaction(rawTxHex: string): Promise<TxHash>;
++    listUnspent(address: AddressOption, options?: UtxoQueryOptions): Promise<UTXO[]>;
++    getBalance(address: AddressOption): Promise<{
++        confirmed: number;
++        unconfirmed: number;
++    }>;
++    getTransaction(txHash: string): Promise<TransactionResponse>;
++    getFeePerKb(): Promise<number>;
++}
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/providers/tbcpy-provider.js /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/providers/tbcpy-provider.js
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/providers/tbcpy-provider.js	1970-01-01 08:00:00.000000000 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/providers/tbcpy-provider.js	2024-08-14 16:13:54.556023914 +0800
+@@ -0,0 +1,182 @@
++"use strict";
++var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
++    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
++    return new (P || (P = Promise))(function (resolve, reject) {
++        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
++        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
++        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
++        step((generator = generator.apply(thisArg, _arguments || [])).next());
++    });
++};
++var __importDefault = (this && this.__importDefault) || function (mod) {
++    return (mod && mod.__esModule) ? mod : { "default": mod };
++};
++Object.defineProperty(exports, "__esModule", { value: true });
++exports.TbcProvider = void 0;
++const scryptlib_1 = require("scryptlib");
++const abstract_provider_1 = require("../bsv/abstract-provider");
++const superagent_1 = __importDefault(require("superagent"));
++const utils_1 = require("../bsv/utils");
++
++class TbcProvider extends abstract_provider_1.Provider {
++    constructor(network) {
++        super();
++        this._isConnected = false;
++        this._network = network;
++        this._initializeConnection();
++    }
++    get apiPrefix() {
++        const networkStr = this._network.name === scryptlib_1.bsv.Networks.mainnet.name ? 'main' : 'test';
++        return `https://turingwallet.xyz/v1/tbc/${networkStr}`;
++    }
++    isConnected() {
++        return this._isConnected;
++    }
++    connect() {
++        var _a;
++        return __awaiter(this, void 0, void 0, function* () {
++            try {
++                const res = yield superagent_1.default.get(`https://turingwallet.xyz/v1/tbc/api`)
++                    .timeout(30000);
++                if (res.ok && res.text === "Turing API") {
++                    this._isConnected = true;
++                    this.emit("connected" /* ProviderEvent.Connected */, true);
++                }
++                else {
++                    throw new Error(`${res.body.msg ? res.body.msg : res.text}`);
++                }
++            }
++            catch (error) {
++                this._isConnected = false;
++                this.emit("connected" /* ProviderEvent.Connected */, false);
++                throw new Error(`connect failed: ${(_a = error.message) !== null && _a !== void 0 ? _a : "unknown error"}`);
++            }
++            return Promise.resolve(this);
++        });
++    }
++    updateNetwork(network) {
++        this._network = network;
++        this.emit("networkChange" /* ProviderEvent.NetworkChange */, network);
++    }
++    getNetwork() {
++        return this._network;
++    }
++    sendRawTransaction(rawTxHex) {
++        return __awaiter(this, void 0, void 0, function* () {
++            yield this._ready();
++            const size = Math.max(1, rawTxHex.length / 2 / 1024); //KB
++            const timeout = Math.max(10000, 1000 * size);
++            let n = 1;
++            n++;
++            try {
++                const res = yield superagent_1.default.post(`${this.apiPrefix}/broadcast/tx/raw`)
++                    .timeout({
++                    response: timeout,
++                    deadline: 60000,
++                })
++                    .set('Content-Type', 'application/json')
++                    .send({ txHex: rawTxHex });
++                return res.body;
++            }
++            catch (error) {
++                if (error.response && error.response.text) {
++                    if (needIgnoreError(error.response.text)) {
++                        return new scryptlib_1.bsv.Transaction(rawTxHex).id;
++                    }
++                    throw new Error(`TbcProvider ERROR: ${friendlyBIP22RejectionMsg(error.response.text)}`);
++                }
++                throw new Error(`TbcProvider ERROR: ${error.message}`);
++            }
++        });
++    }
++    listUnspent(address, options) {
++        return __awaiter(this, void 0, void 0, function* () {
++            yield this._ready();
++            const res = yield superagent_1.default.get(`${this.apiPrefix}/address/${address}/unspent`);
++            let utxos = res.body.map(item => ({
++                txId: item.tx_hash,
++                outputIndex: item.tx_pos,
++                satoshis: item.value,
++                script: scryptlib_1.bsv.Script.buildPublicKeyHashOut(address).toHex(),
++            }));
++            if (options) {
++                return (0, utils_1.filterUTXO)(utxos, options);
++            }
++            return utxos;
++        });
++    }
++    getBalance(address) {
++        return this.listUnspent(address).then(utxos => {
++            return {
++                confirmed: utxos.reduce((acc, utxo) => {
++                    acc += utxo.satoshis;
++                    return acc;
++                }, 0),
++                unconfirmed: 0
++            };
++        });
++    }
++    getTransaction(txHash) {
++        return __awaiter(this, void 0, void 0, function* () {
++            yield this._ready();
++            return superagent_1.default.get(`${this.apiPrefix}/tx/${txHash}/hex`).then(res => {
++                if (res.ok) {
++                    return new scryptlib_1.bsv.Transaction(res.text);
++                }
++                else if (res.error) {
++                    throw res.error;
++                }
++                else {
++                    throw `getTransaction error ${txHash}`;
++                }
++            });
++        });
++    }
++    getFeePerKb() {
++        return Promise.resolve(80);
++    }
++}
++exports.TbcProvider = TbcProvider;
++
++function needIgnoreError(inMsg) {
++    if (inMsg.includes('Transaction already in the mempool')) {
++        return true;
++    }
++    else if (inMsg.includes('txn-already-known')) {
++        return true;
++    }
++    return false;
++}
++
++function friendlyBIP22RejectionMsg(inMsg) {
++    if (inMsg.includes('bad-txns-vin-empty')) {
++        return 'Transaction is missing inputs.';
++    }
++    else if (inMsg.includes('bad-txns-vout-empty')) {
++        return 'Transaction is missing outputs.';
++    }
++    else if (inMsg.includes('bad-txns-oversize')) {
++        return 'Transaction is too large.';
++    }
++    else if (inMsg.includes('bad-txns-vout-negative')) {
++        return 'Transaction output value is negative.';
++    }
++    else if (inMsg.includes('bad-txns-vout-toolarge')) {
++        return 'Transaction output value is too large.';
++    }
++    else if (inMsg.includes('bad-txns-txouttotal-toolarge')) {
++        return 'Transaction total output value is too large.';
++    }
++    else if (inMsg.includes('bad-txns-prevout-null')) {
++        return 'Transaction inputs previous TX reference is null.';
++    }
++    else if (inMsg.includes('bad-txns-inputs-duplicate')) {
++        return 'Transaction contains duplicate inputs.';
++    }
++    else if (inMsg.includes('mandatory-script-verify-flag-failed')) {
++        return 'Script evaluation failed.';
++    }
++    else {
++        return inMsg;
++    }
++}
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/smart-contract/contract.js /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/smart-contract/contract.js
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/smart-contract/contract.js	2024-08-15 11:05:52.626526219 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/smart-contract/contract.js	2024-08-15 11:40:45.480599060 +0800
+@@ -1930,7 +1930,7 @@
+                 // 34 bytes is a change output size
+                 estimateSize += 34;
+                 // min change amount
+-                outputAmount += 1;
++                outputAmount += 80;
+             }
+             // n stands for n utxo, and provder provides
+             // providerAmount represents the total amount of utxo provided by provider
+@@ -1945,7 +1945,7 @@
+             });
+             tx.from(feeUtxos);
+             if (!(0, utils_2.checkTxFee)(tx, feePerKb)) {
+-                throw new Error(`no sufficient utxos to pay the fee ${Math.ceil(estimateSize / 1000 * feePerKb)}`);
++                throw new Error(`no sufficient utxos to pay the fee ${Math.ceil(estimateSize / 1000 * feePerKb)>80?Math.ceil(estimateSize / 1000 * feePerKb):80}`);
+             }
+         });
+     }
+diff -urN /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/smart-contract/utils/index.js /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/smart-contract/utils/index.js
+--- /home/alex/construct_tx/test/node_modules/scrypt-ts/dist/smart-contract/utils/index.js	2024-08-15 11:05:52.666527316 +0800
++++ /home/alex/contracrfilescrypt/test/node_modules/scrypt-ts/dist/smart-contract/utils/index.js	2024-08-15 11:30:32.688256181 +0800
+@@ -82,7 +82,7 @@
+ function checkTxFee(tx, feePerKb) {
+     const realFee = tx.getUnspentValue();
+     const estimateSize = tx.getEstimateSize();
+-    const expectedFee = Math.max(1, Math.ceil(estimateSize / 1000 * feePerKb));
++    const expectedFee = Math.max(80, Math.ceil(estimateSize / 1000 * feePerKb));
+     return realFee >= expectedFee;
+ }
+ exports.checkTxFee = checkTxFee;
